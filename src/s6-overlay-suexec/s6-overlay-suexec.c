@@ -19,6 +19,9 @@
 
 #include <execline/execline.h>
 
+#include <linux/prctl.h>
+#include <linux/securebits.h>
+
 #define USAGE "s6-overlay-suexec { root_block... } normal_init..."
 #define addenv(k, v) if (!env_mspawn(k, v)) strerr_diefu1sys(111, "modify environment")
 
@@ -30,6 +33,8 @@ int main (int argc, char const **argv)
   int argc1, wstat ;
   char fmt[UINT64_FMT] ;
   PROG = "s6-overlay-suexec" ;
+
+  if (prctl(PR_SET_SECUREBITS, SECBIT_NO_SETUID_FIXUP) == -1) strerr_diefu1sys(111, "prctl") ;
 
   if (!--argc) strerr_dieusage(100, USAGE) ;
   if (getpid() != 1) strerr_dief1x(100, "can only run as pid 1") ;
