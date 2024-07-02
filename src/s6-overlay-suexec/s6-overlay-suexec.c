@@ -8,6 +8,7 @@
 #include <pwd.h>
 #include <grp.h>
 #include <errno.h>
+#include <stdio.h>
 
 #include <skalibs/types.h>
 #include <skalibs/strerr.h>
@@ -18,7 +19,9 @@
 #include <execline/execline.h>
 
 #include <sys/prctl.h>
+#include <sys/syscall.h>
 #include <linux/securebits.h>
+#include <linux/capability.h>
 
 #define USAGE "s6-overlay-suexec { root_block... } normal_init..."
 
@@ -35,8 +38,43 @@ int main (int argc, char const **argv, char const *const *envp)
   size_t len = env_len(envp) ;
   size_t m = 0 ;
   unsigned int n = 0 ;
+  int tty_cap_ambient ;
+  int capget_ret ;
   char fmt[MAXLEN] = "GIDLIST\0GID=" ;
   PROG = "s6-overlay-suexec" ;
+  uint64_t cap_permitted = 0UL ;
+  uint64_t cap_inheritable = 0UL ;
+  uint64_t cap_bit = 0UL ;
+  unsigned long i ;
+  int cap_raise_result ;
+
+  struct __user_cap_header_struct cap_header = {
+    .version = _LINUX_CAPABILITY_VERSION_3,
+    .pid = 0
+  };
+  struct __user_cap_data_struct cap_data[2] = {{},{}};
+  capget_ret = syscall(SYS_capget, &cap_header, cap_data);
+  if (capget_ret == -1)
+    fprintf(stderr, "capget errno: %d\n", errno);
+  else
+    printf("capget "
+           "effective: 0x%016lX "
+           "permitted: 0x%016lX "
+           "inheritable: 0x%016lX\n",
+           (((uint64_t)cap_data[1].effective) << 32UL) | ((uint64_t)cap_data[0].effective),
+           (((uint64_t)cap_data[1].permitted) << 32UL) | ((uint64_t)cap_data[0].permitted),
+           (((uint64_t)cap_data[1].inheritable) << 32UL) | ((uint64_t)cap_data[0].inheritable));
+  fflush(stdout);
+
+  cap_permitted = (((uint64_t)cap_data[1].permitted) << 32UL) | ((uint64_t)cap_data[0].permitted);
+  cap_inheritable = (((uint64_t)cap_data[1].inheritable) << 32UL) | ((uint64_t)cap_data[0].inheritable);
+
+  tty_cap_ambient = prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_IS_SET, CAP_SYS_TTY_CONFIG, 0L, 0L);
+  if (tty_cap_ambient == -1)
+    fprintf(stderr, "tty_cap_ambient errno: %d\n", errno);
+  else
+    printf("tty_cap_ambient: %d\n", tty_cap_ambient);
+  fflush(stdout);
 
   if (prctl(PR_SET_SECUREBITS, SECBIT_NO_SETUID_FIXUP) == -1) strerr_diefu1sys(111, "prctl") ;
 
@@ -127,6 +165,16 @@ int main (int argc, char const **argv, char const *const *envp)
           strerr_diefu4sys(111, "fill CONTAINER_", "USER", " environment variable with value ", pw->pw_name) ;
         }
         memcpy(fmt + m, pw->pw_name, rlen) ; m += rlen ; n++ ;
+      }
+    }
+  }
+
+  for (i = 0UL; i < 64UL; ++i) {
+    cap_bit = 1UL << i;
+    if (cap_bit & cap_permitted & cap_inheritable) {
+      cap_raise_result = prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, i, 0L, 0L);
+      if (cap_raise_result == -1) {
+        fprintf(stderr, "Unable to raise cap %lu", i);
       }
     }
   }
